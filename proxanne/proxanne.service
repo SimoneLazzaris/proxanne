@@ -1,0 +1,11 @@
+[Unit]
+Description=SMTP antispam proxy 
+
+[Service]
+Type=notify
+# ExecStart=/usr/local/bin/proxanne -listen 127.0.0.1:10026 -smtpd ip6-localhost:10025 -spamd spamassassin1.mailfarm.interac.it:783 -syslog
+ExecStart=/usr/local/bin/proxanne -listen 127.0.0.1:10026 -smtpd ip6-localhost:10025 -syslog
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
