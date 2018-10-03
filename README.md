@@ -26,3 +26,10 @@ Usage of proxanne/proxanne:
   -syslog
         Enable syslog logging
 ```
+
+
+To build the proxy, copy/clone the repo in $GOLANG/src and then simply:
+```
+go build proxanne
+```
+I've included a .service file for systemd integration
