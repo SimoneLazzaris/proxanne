@@ -19,6 +19,8 @@ var cfg struct {
 	sysLogging bool 
 	spamdAddr  string
 	smtpAddr   string
+	saSize     int
+	cutOff     int
 }
 
 func mkSpamStatusLine(stat Result) string {
@@ -53,20 +55,32 @@ func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
 		return errors.New("Cannot connect back to SMTP server: "+err.Error())
 	}
 	for _,rcpt:= range to {
-		// log.Printf("Message from %s to %s, starting scan", from, rcpt)
-		res,err:=cc.Report(data,rcpt)
-		if err!=nil {
-			log.Printf("Message from %s to %s. Cannot evaluate message: %s",from,to,err)
-			return errors.New("Cannot process message: "+err.Error())
+		var res Result 
+		var statusLine string
+		if len(data)<cfg.saSize {
+			res,err=cc.Report(data,rcpt)
+			if err!=nil {
+				log.Printf("Message from %s to %s. Cannot evaluate message: %s",from,to,err)
+				return errors.New("Cannot process message: "+err.Error())
+			}
+			logline:=mkLogLine(from, rcpt, res)
+			if res.Spam && res.Score>res.Threshold+float64(cfg.cutOff) {
+				log.Printf(logline+" Message dropped")
+				return nil
+			}
+			log.Printf(logline)
+			statusLine=mkSpamStatusLine(res)
+		} else {
+			log.Printf("Message from %s to %s. Not performing scan, message too big",from,to)
+			statusLine="X-Spam-Status: No, score=?, required=? (not scanned, too big)\n"
 		}
-		log.Printf(mkLogLine(from, rcpt, res))
 		err=mailout.Mail(from)
 		if err!=nil { log.Printf("From refused"); return errors.New("SMTP refused FROM"); }
 		mailout.Rcpt(rcpt)
 		if err!=nil { log.Printf("Rcpt refused"); return errors.New("SMTP refused RCPT"); }
 		wr,err:=mailout.Data()
 		if err!=nil { log.Printf("Data message"); return errors.New("SMTP refused DATA"); }
-		wr.Write([]byte(mkSpamStatusLine(res)))
+		wr.Write([]byte(statusLine))
 		n:=0
 		for n<len(data) {
 			n1,err:=wr.Write(data[n:])
@@ -83,6 +97,8 @@ func init() {
 	flag.BoolVar(&cfg.sysLogging,"syslog",false,"Enable syslog logging")
 	flag.StringVar(&cfg.spamdAddr,"spamd","127.0.0.1:783","spamd address and port")
 	flag.StringVar(&cfg.smtpAddr,"smtpd","127.0.0.1:10025","SMTP address and port for reinjection")
+	flag.IntVar(&cfg.saSize,"size",524288,"Size threshold in bytes, bigger message will go unscanned")
+	flag.IntVar(&cfg.cutOff,"cutoff",10,"Cutoff threshold, will silently discard messages if score>(threshold+cutoff)")
 }
 
 func main() {
