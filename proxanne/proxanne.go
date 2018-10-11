@@ -6,7 +6,8 @@ import (
 	"log/syslog"
 	"net"
  	"net/smtp"
-// 	"io/ioutil"
+	"strings"
+ 	"math/rand"
 	"errors"
 	"smtpd"
 	"fmt"
@@ -47,8 +48,31 @@ func mkLogLine(from string, rcpt string, stat Result) string {
 		return fmt.Sprintf("Message from <%s> to <%s>, scan result: <%s> %s (%f/%f) [%s]", from, rcpt, isSpam, stat.Message, stat.Score, stat.Threshold, rulz)
 }
 
+
+func saConnect() (SpamClient, error) {
+	saList:=strings.Split(cfg.spamdAddr,",")
+	// shuffle the array
+	for i := range saList {
+		j := rand.Intn(i + 1)
+		saList[i], saList[j] = saList[j], saList[i]
+	}
+	for _,ss:=range saList {
+		cc:=SpamClient{"tcp",ss}
+		if cc.Ping()==nil {
+			return cc,nil
+		log.Printf("spamd server %s unreachable",ss)
+		}
+	}
+	return SpamClient{"",""},errors.New("Cannot connect to spamd")
+}
+
 func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
-	cc:=SpamClient{"tcp",cfg.spamdAddr}
+	//cc:=SpamClient{"tcp",cfg.spamdAddr}
+	cc,err:=saConnect()
+	if err!=nil {
+		log.Printf("Message from %s to %s. Cannot connect to spamd",from,to,err)
+		return err
+	}
 	mailout,err:=smtp.Dial(cfg.smtpAddr)
 	if err!=nil {
 		log.Printf("Message from %s to %s. Cannot connect to SMTP server: %s",from,to,err)
