@@ -1,7 +1,8 @@
 package main
 
 import (
-// 	"bytes"
+	"bytes"
+ 	"io"
 	"log"
 	"log/syslog"
 	"net"
@@ -22,6 +23,11 @@ var cfg struct {
 	smtpAddr   string
 	saSize     int
 	cutOff     int
+}
+
+type HeaderInfo struct {
+	messageid	string
+	subject		string 
 }
 
 func mkSpamStatusLine(stat Result) string {
@@ -66,8 +72,66 @@ func saConnect() (SpamClient, error) {
 	return SpamClient{"",""},errors.New("Cannot connect to spamd")
 }
 
+func xsend(data[]byte, wr io.WriteCloser) error {
+	n:=0
+	siz:=len(data)
+	for n<siz {
+		n1,err:=wr.Write(data[n:])
+		if err!=nil { return errors.New("SMTP error writing data") }
+		n=n+n1
+	}
+	return nil
+}
+
+func xtractHeaders(data[]byte) (int, [][]byte) {
+	hstop:=bytes.Index(data, []byte{'\r','\n','\r','\n'} )
+	if hstop==-1 {
+		return -1,[][]byte{}
+	}
+	headers:=bytes.Split(data[:hstop+2], []byte{'\r','\n'})
+	h2:=make([][]byte,len(headers))
+	i2:=0
+	for idx,hed:=range headers {
+		if idx==0 || (!bytes.HasPrefix(hed,[]byte{' '}) && !bytes.HasPrefix(hed,[]byte{'\t'})) {
+			h2[i2]=hed
+			i2++
+			continue
+		}
+		h2[i2-1]=append(h2[i2-1], []byte{'\r','\n'}...)
+		h2[i2-1]=append(h2[i2-1], hed...)
+	}
+// 	for i,hed:=range h2[:i2] {
+// 		fmt.Printf("<%d>%s</%d>\n",i,hed,i)
+// 	}
+	return hstop+2,h2
+}
+
+func removeHeader(headers [][]byte, rmv string) [][]byte {
+	rm2:=[]byte(strings.ToLower(rmv))
+	for i:=0; i<len(headers); i++ {
+		if bytes.HasPrefix(bytes.ToLower(headers[i]),rm2) {
+			return append(headers[:i],headers[i+1:]...)
+		}
+	}
+	return headers
+}
+
+func sendMessage(data [] byte, statusLine string, wr io.WriteCloser) error {
+	if err:=xsend([]byte(statusLine),wr); err!=nil { log.Printf("Data message"); return err }
+	
+	hlen,h2:=xtractHeaders(data)
+	for _,h:=range(h2) {
+		if bytes.HasPrefix(h,[]byte("X-Spam-Status")) { continue }
+		if bytes.HasPrefix(h,[]byte("X-EsetResult")) { continue }
+		if len(h)==0 { break }
+// 		fmt.Printf("[%s]\n",string(h))
+		xsend(h,wr)
+ 		xsend([]byte {'\r','\n'},wr)
+	}
+	return xsend(data[hlen:],wr)
+}
+
 func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
-	//cc:=SpamClient{"tcp",cfg.spamdAddr}
 	cc,err:=saConnect()
 	if err!=nil {
 		log.Printf("Message from %s to %s. Cannot connect to spamd",from,to,err)
@@ -104,13 +168,7 @@ func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
 		if err!=nil { log.Printf("Rcpt refused"); return errors.New("SMTP refused RCPT"); }
 		wr,err:=mailout.Data()
 		if err!=nil { log.Printf("Data message"); return errors.New("SMTP refused DATA"); }
-		wr.Write([]byte(statusLine))
-		n:=0
-		for n<len(data) {
-			n1,err:=wr.Write(data[n:])
-			if err!=nil { log.Printf("Data message"); return errors.New("SMTP error writing data") }
-			n=n+n1
-			}
+		sendMessage(data,statusLine,wr)
 		wr.Close()
 	}
 	return nil
