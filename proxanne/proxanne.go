@@ -13,6 +13,7 @@ import (
 	"smtpd"
 	"fmt"
 	"flag"
+	"regexp"
 	"github.com/coreos/go-systemd/daemon"
 )
 
@@ -51,7 +52,7 @@ func mkLogLine(from string, rcpt string, stat Result) string {
 		}
 		isSpam:="GOOD"
 		if stat.Spam { isSpam="SPAM"; }
-		return fmt.Sprintf("Message from <%s> to <%s>, scan result: <%s> %s (%f/%f) [%s]", from, rcpt, isSpam, stat.Message, stat.Score, stat.Threshold, rulz)
+		return fmt.Sprintf("Message from <%s> to <%s>, %%s Scan result: <%s> %s (%.2f/%.2f) [%s]", from, rcpt, isSpam, stat.Message, stat.Score, stat.Threshold, rulz)
 }
 
 
@@ -100,9 +101,6 @@ func xtractHeaders(data[]byte) (int, [][]byte) {
 		h2[i2-1]=append(h2[i2-1], []byte{'\r','\n'}...)
 		h2[i2-1]=append(h2[i2-1], hed...)
 	}
-// 	for i,hed:=range h2[:i2] {
-// 		fmt.Printf("<%d>%s</%d>\n",i,hed,i)
-// 	}
 	return hstop+2,h2
 }
 
@@ -116,20 +114,31 @@ func removeHeader(headers [][]byte, rmv string) [][]byte {
 	return headers
 }
 
-func sendMessage(data [] byte, statusLine string, wr io.WriteCloser) error {
-	if err:=xsend([]byte(statusLine),wr); err!=nil { log.Printf("Data message"); return err }
-	
-	hlen,h2:=xtractHeaders(data)
-	for _,h:=range(h2) {
-		if bytes.HasPrefix(h,[]byte("X-Spam-Status")) { continue }
-		if bytes.HasPrefix(h,[]byte("X-EsetResult")) { continue }
-		if len(h)==0 { break }
-// 		fmt.Printf("[%s]\n",string(h))
-		xsend(h,wr)
- 		xsend([]byte {'\r','\n'},wr)
-	}
-	return xsend(data[hlen:],wr)
+func skipHeader(h []byte) bool {
+	if bytes.HasPrefix(h,[]byte("X-Spam-Status")) { return true }
+	if bytes.HasPrefix(h,[]byte("X-EsetResult")) { return true }
+	return false
 }
+
+var rx=regexp.MustCompile("^([a-zA-Z0-9-]+)\\s*:\\s*(.*)$")
+func parseHeader(h []byte, hed *HeaderInfo) {
+// 	fmt.Printf("parsing header [%s]\n",string(h))
+	if rx.Match(h) {
+// 		fmt.Printf("match\n")
+		mx:=rx.FindSubmatch(h)
+		if len(mx)<3 { return }
+// 		fmt.Printf("%s -> %s\n",string(mx[1]),string(mx[2]))
+		switch strings.ToLower(string(mx[1])) {
+			case "message-id":
+				// fmt.Printf("Message-ID: %s",string(mx[2]))
+				hed.messageid=string(mx[2])
+			case "subject":
+				// fmt.Printf("Subject: %s",string(mx[2]))
+				hed.subject=string(mx[2])
+		}
+	}
+}
+
 
 func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
 	cc,err:=saConnect()
@@ -145,31 +154,51 @@ func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
 	for _,rcpt:= range to {
 		var res Result 
 		var statusLine string
+		var logline string
+		var wr io.WriteCloser
+		drop:=false
+		hed:=HeaderInfo{"?","?"}
 		if len(data)<cfg.saSize {
 			res,err=cc.Report(data,rcpt)
 			if err!=nil {
 				log.Printf("Message from %s to %s. Cannot evaluate message: %s",from,to,err)
 				return errors.New("Cannot process message: "+err.Error())
 			}
-			logline:=mkLogLine(from, rcpt, res)
+			logline=mkLogLine(from, rcpt, res)
 			if res.Spam && res.Score>res.Threshold+float64(cfg.cutOff) {
-				log.Printf(logline+" Message dropped")
-				return nil
+				logline=logline+" Message dropped"
+				drop=true
 			}
-			log.Printf(logline)
 			statusLine=mkSpamStatusLine(res)
 		} else {
-			log.Printf("Message from %s to %s. Not performing scan, message too big",from,to)
+			logline=fmt.Sprintf("Message from %s to %s. %%s Not performing scan, message too big",from,to)
 			statusLine="X-Spam-Status: No, score=?, required=? (not scanned, too big)\n"
 		}
-		err=mailout.Mail(from)
-		if err!=nil { log.Printf("From refused"); return errors.New("SMTP refused FROM"); }
-		mailout.Rcpt(rcpt)
-		if err!=nil { log.Printf("Rcpt refused"); return errors.New("SMTP refused RCPT"); }
-		wr,err:=mailout.Data()
-		if err!=nil { log.Printf("Data message"); return errors.New("SMTP refused DATA"); }
-		sendMessage(data,statusLine,wr)
-		wr.Close()
+		if !drop {
+			err=mailout.Mail(from)
+			if err!=nil { log.Printf("From refused"); return errors.New("SMTP refused FROM"); }
+			mailout.Rcpt(rcpt)
+			if err!=nil { log.Printf("Rcpt refused"); return errors.New("SMTP refused RCPT"); }
+			wr,err=mailout.Data()
+			if err!=nil { log.Printf("Data message"); return errors.New("SMTP refused DATA"); }
+			
+			if err=xsend([]byte(statusLine),wr); err!=nil { log.Printf("Data message"); return err }
+			}
+		hlen,h2:=xtractHeaders(data)
+		for _,h:=range(h2) {
+			if len(h)==0 { break }
+			if skipHeader(h) { continue }
+			parseHeader(h,&hed)
+			if drop { continue }
+			xsend(h,wr)
+			xsend([]byte {'\r','\n'},wr)
+		}
+		if !drop {
+			if err=xsend(data[hlen:],wr); err!=nil {log.Printf("Data message"); return err }
+		}
+		logline2:=fmt.Sprintf("ID %s, Subject \"%s\".",hed.messageid, hed.subject)
+		log.Printf(fmt.Sprintf(logline,logline2))
+		if !drop { wr.Close() }
 	}
 	return nil
 }
