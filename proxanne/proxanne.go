@@ -41,6 +41,7 @@ func mkSpamStatusLine(stat Result) string {
 		ret=ret+hh.RuleName
 	}
 	ret=ret+"\n"
+	ret=ret+fmt.Sprintf("X-Spam-Flag: %s\n",strings.ToUpper(isSpam))
 	return ret
 }
 
@@ -116,6 +117,7 @@ func removeHeader(headers [][]byte, rmv string) [][]byte {
 
 func skipHeader(h []byte) bool {
 	if bytes.HasPrefix(h,[]byte("X-Spam-Status")) { return true }
+	if bytes.HasPrefix(h,[]byte("X-Spam-Flag")) { return true }
 	if bytes.HasPrefix(h,[]byte("X-EsetResult")) { return true }
 	return false
 }
