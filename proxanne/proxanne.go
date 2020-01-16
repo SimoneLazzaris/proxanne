@@ -202,6 +202,7 @@ func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
 		log.Printf(fmt.Sprintf(logline,logline2))
 		if !drop { wr.Close() }
 	}
+	_=mailout.Quit()
 	return nil
 }
 
